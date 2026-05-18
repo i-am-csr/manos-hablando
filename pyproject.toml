@@ -1,0 +1,57 @@
+[build-system]
+requires = ["flit_core >=3.2,<4"]
+build-backend = "flit_core.buildapi"
+
+[project]
+name = "manos_hablando"
+version = "0.0.1"
+description = "LSM (Lengua de Se\u00f1as Mexicanas) to text translation system"
+authors = [
+  { name = "Cesar Barrientos, Alan Rodriguez" },
+]
+license = { file = "LICENSE" }
+readme = "README.md"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License"
+]
+dependencies = [
+    "albumentations>=2.0.8",
+    "ipython",
+    "jupyterlab",
+    "loguru",
+    "matplotlib",
+    "mediapipe>=0.10.35",
+    "mkdocs",
+    "mlflow>=3.12.0",
+    "notebook",
+    "numpy",
+    "opencv-python>=4.13.0.92",
+    "pandas",
+    "pip",
+    "pytest",
+    "python-dotenv",
+    "ruff",
+    "scikit-learn",
+    "seaborn>=0.13.2",
+    "streamlit>=1.57.0",
+    "streamlit-webrtc>=0.65.4",
+    "torch>=2.11.0",
+    "tqdm",
+    "typer",
+]
+requires-python = "~=3.11.0"
+
+
+[tool.ruff]
+line-length = 99
+src = ["manos_hablando"]
+include = ["pyproject.toml", "manos_hablando/**/*.py"]
+
+[tool.ruff.lint]
+extend-select = ["I"]  # Add import sorting
+
+[tool.ruff.lint.isort]
+known-first-party = ["manos_hablando"]
+force-sort-within-sections = true
+

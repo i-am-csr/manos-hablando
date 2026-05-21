@@ -1,13 +1,9 @@
 from pathlib import Path
 
-import os
-import sys
-
 import mediapipe as mp
-
-import numpy as np
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
+from loguru import logger
 
 # Landmark names for reference
 LANDMARK_NAMES = [
@@ -78,19 +74,19 @@ if __name__ == "__main__":
     import sys
 
     if len(sys.argv) < 2:
-        print("Usage: python mediapipe_handler.py <image_path>")
+        logger.error("Usage: python mediapipe_handler.py <image_path>")
         sys.exit(1)
 
     path = sys.argv[1]
     result = extract_keypoints(path)
 
     if result is None:
-        print("No hand detected in image.")
+        logger.warning("No hand detected in image.")
     else:
-        print(f"Handedness: {result['handedness']} ({result['handedness_confidence']*100:.1f}%)")
-        print(f"\nDetected {len(result['keypoints'])} landmarks:\n")
+        logger.success(f"Handedness: {result['handedness']} ({result['handedness_confidence']*100:.1f}%)")
+        logger.info(f"Detected {len(result['keypoints'])} landmarks:")
         for i, (x, y, z) in enumerate(result['keypoints']):
-            print(f"  [{i:2d}] {LANDMARK_NAMES[i]:15s} x={x:.4f}  y={y:.4f}  z={z:.4f}")
-        print(f"\nWorld landmarks:\n")
+            logger.info(f"  [{i:2d}] {LANDMARK_NAMES[i]:15s} x={x:.4f}  y={y:.4f}  z={z:.4f}")
+        logger.info("World landmarks:")
         for i, (x, y, z) in enumerate(result['world_keypoints']):
-            print(f"  [{i:2d}] {LANDMARK_NAMES[i]:15s} x={x:.4f}  y={y:.4f}  z={z:.4f}")
+            logger.info(f"  [{i:2d}] {LANDMARK_NAMES[i]:15s} x={x:.4f}  y={y:.4f}  z={z:.4f}")

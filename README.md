@@ -86,8 +86,8 @@ uv run python -m manos_hablando.modeling.predict_full <video.mp4> 2>/dev/null
 
 #### `predict_full` options
 
-| Flag | Default | Description |
-|------|---------|-------------|
+| Flag | Default | Purpose |
+|------|---------|---------|
 | `--mode sliding\|gaps` | `sliding` | Segmentation strategy. `sliding` uses a per-frame debounced classifier; `gaps` cuts at no-hand pauses. |
 | `--slowdown N` | `1` | Replicate each frame N times (use 3–4 for natural fingerspelling). |
 | `--context "..."` | `""` | Hint to the LLM (e.g. `"a Spanish person's name"`). Without it, proper nouns may be missed. |

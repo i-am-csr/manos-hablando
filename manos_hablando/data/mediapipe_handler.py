@@ -70,6 +70,160 @@ def extract_keypoints(image_path: str | Path) -> dict | None:
     }
 
 
+def _build_video_landmarker() -> vision.HandLandmarker:
+    """Initialize a MediaPipe HandLandmarker in VIDEO mode."""
+    base_options = python.BaseOptions(model_asset_path=str(MODEL_PATH))
+    options = vision.HandLandmarkerOptions(
+        base_options=base_options,
+        running_mode=vision.RunningMode.VIDEO,
+        num_hands=1,
+        min_hand_detection_confidence=0.5,
+        min_hand_presence_confidence=0.5,
+        min_tracking_confidence=0.5,
+    )
+    return vision.HandLandmarker.create_from_options(options)
+
+
+def extract_keypoints_video(video_path: str | Path) -> dict | None:
+    """
+    Extract per-frame hand landmarks from a video using MediaPipe VIDEO mode.
+
+    Args:
+        video_path: Path to the video file.
+
+    Returns:
+        Dictionary with per-frame keypoints, or None if no hand detected
+        in any frame.
+        {
+            "fps": float,
+            "total_frames": int,
+            "detected_frames": int,
+            "keypoints": [[[x,y,z], ...21], ...N frames],
+            "world_keypoints": [[[x,y,z], ...21], ...N frames],
+        }
+    """
+    import cv2
+
+    video_path = Path(video_path)
+    if not video_path.exists():
+        raise FileNotFoundError(f"Video not found: {video_path}")
+
+    cap = cv2.VideoCapture(str(video_path))
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+    keypoints_seq = []
+    world_keypoints_seq = []
+
+    with _build_video_landmarker() as landmarker:
+        frame_idx = 0
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            mp_image = mp.Image(
+                image_format=mp.ImageFormat.SRGB, data=frame_rgb,
+            )
+            timestamp_ms = int(frame_idx * 1000 / fps)
+
+            result = landmarker.detect_for_video(mp_image, timestamp_ms)
+
+            if result.hand_landmarks:
+                keypoints_seq.append(
+                    [[lm.x, lm.y, lm.z] for lm in result.hand_landmarks[0]]
+                )
+                world_keypoints_seq.append(
+                    [[lm.x, lm.y, lm.z] for lm in result.hand_world_landmarks[0]]
+                )
+
+            frame_idx += 1
+
+    cap.release()
+
+    if not keypoints_seq:
+        return None
+
+    return {
+        "fps": fps,
+        "total_frames": total_frames,
+        "detected_frames": len(keypoints_seq),
+        "keypoints": keypoints_seq,
+        "world_keypoints": world_keypoints_seq,
+    }
+
+
+def extract_keypoints_video_per_frame(
+    video_path: str | Path,
+) -> dict | None:
+    """
+    Extract per-frame hand landmarks across the entire video timeline,
+    preserving frame positions where no hand was detected.
+
+    Unlike extract_keypoints_video (which drops no-detection frames),
+    this returns one slot per source frame so callers can segment on the
+    no-hand gaps. Used by predict_full to split a multi-sign video into
+    one segment per letter.
+
+    Returns:
+        {
+            "fps": float,
+            "total_frames": int,
+            "detected_frames": int,
+            "keypoints_per_frame": [ [[x,y,z], ...21]  or  None, ...total_frames ],
+        }
+    """
+    import cv2
+
+    video_path = Path(video_path)
+    if not video_path.exists():
+        raise FileNotFoundError(f"Video not found: {video_path}")
+
+    cap = cv2.VideoCapture(str(video_path))
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+    timeline: list[list | None] = []
+    detected = 0
+
+    with _build_video_landmarker() as landmarker:
+        frame_idx = 0
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            mp_image = mp.Image(
+                image_format=mp.ImageFormat.SRGB, data=frame_rgb,
+            )
+            timestamp_ms = int(frame_idx * 1000 / fps)
+            result = landmarker.detect_for_video(mp_image, timestamp_ms)
+
+            if result.hand_landmarks:
+                timeline.append(
+                    [[lm.x, lm.y, lm.z] for lm in result.hand_landmarks[0]]
+                )
+                detected += 1
+            else:
+                timeline.append(None)
+
+            frame_idx += 1
+
+    cap.release()
+
+    if detected == 0:
+        return None
+
+    return {
+        "fps": fps,
+        "total_frames": frame_idx,
+        "detected_frames": detected,
+        "keypoints_per_frame": timeline,
+    }
+
+
 if __name__ == "__main__":
     import sys
 

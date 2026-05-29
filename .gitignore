@@ -188,6 +188,7 @@ cython_debug/
 
 # MLflow
 mlruns/
+mlflow.db
 
 # Models
 models/hand_landmarker.task

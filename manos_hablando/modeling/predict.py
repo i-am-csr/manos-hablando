@@ -49,13 +49,13 @@ def predict_image(
         (letter, confidence) or None if no hand detected.
     """
     # Extract keypoints
-    keypoints = extract_keypoints(image_path)
-    if keypoints is None:
+    result = extract_keypoints(image_path)
+    if result is None:
         logger.warning(f"No hand detected in {image_path}")
         return None
 
     # Normalize
-    X = np.array(keypoints, dtype=np.float32).flatten()    # (63,)
+    X = np.array(result["keypoints"], dtype=np.float32).flatten()    # (63,)
     X = normalize_keypoints(X.reshape(1, -1))              # (1, 63)
     X_tensor = torch.tensor(X, dtype=torch.float32).to(device)
 
@@ -83,11 +83,11 @@ def predict_top_k(
 
     Useful for ambiguous signs.
     """
-    keypoints = extract_keypoints(image_path)
-    if keypoints is None:
+    result = extract_keypoints(image_path)
+    if result is None:
         return None
 
-    X = np.array(keypoints, dtype=np.float32).flatten()
+    X = np.array(result["keypoints"], dtype=np.float32).flatten()
     X = normalize_keypoints(X.reshape(1, -1))
     X_tensor = torch.tensor(X, dtype=torch.float32).to(device)
 

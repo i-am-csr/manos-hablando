@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import random
 
 from loguru import logger
 from rich.console import Console
@@ -8,6 +9,7 @@ from rich.table import Table
 
 from manos_hablando.config import PROCESSED_DATA_DIR, RAW_DATA_DIR
 from manos_hablando.data.mediapipe_handler import (
+    _build_landmarker,
     extract_keypoints,
     extract_keypoints_video,
 )
@@ -15,12 +17,16 @@ from manos_hablando.data.mediapipe_handler import (
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv"}
 DYNAMIC_LETTERS = {"J", "K", "Ñ", "Q", "X", "Z"}
+# Cap for static-letter image folders. Larger sets show diminishing returns and
+# inflate extraction time linearly. None disables the cap.
+DEFAULT_MAX_STATIC_SAMPLES = 1500
+SAMPLE_SEED = 42
 console = Console()
 
 
-def _extract_static_entry(image_path: Path, letter: str) -> dict | None:
+def _extract_static_entry(image_path: Path, letter: str, landmarker=None) -> dict | None:
     """Run image-mode MediaPipe and wrap output as a 1-frame video entry."""
-    result = extract_keypoints(image_path)
+    result = extract_keypoints(image_path, landmarker=landmarker)
     if result is None:
         return None
     # Wrap (21, 3) → (1, 21, 3) so downstream code can treat every entry as a sequence.
@@ -56,6 +62,7 @@ def _extract_dynamic_entry(video_path: Path, letter: str) -> dict | None:
 def extract_full_dataset_keypoints(
     raw_path: Path = RAW_DATA_DIR,
     processed_path: Path = PROCESSED_DATA_DIR,
+    max_static_samples: int | None = DEFAULT_MAX_STATIC_SAMPLES,
 ) -> None:
     """
     Walk every letter folder under raw_path and emit a single
@@ -77,15 +84,26 @@ def extract_full_dataset_keypoints(
         logger.warning(f"No letter folders found in {raw_path}")
         return
 
+    # One IMAGE-mode landmarker shared across all static images. Building one
+    # spins up a Metal/GL context (~300 ms); doing it per image dominates
+    # extraction time. Video letters still build their own VIDEO-mode
+    # landmarker per clip inside extract_keypoints_video.
+    shared_image_landmarker = _build_landmarker()
+
     for letter_folder in letter_folders:
         letter = letter_folder.name
         is_dynamic = letter in DYNAMIC_LETTERS
         extensions = VIDEO_EXTENSIONS if is_dynamic else IMAGE_EXTENSIONS
 
-        samples = sorted(
-            f for f in letter_folder.iterdir()
-            if f.suffix.lower() in extensions
-        )
+        samples = sorted(f for f in letter_folder.iterdir() if f.suffix.lower() in extensions)
+
+        if not is_dynamic and max_static_samples is not None and len(samples) > max_static_samples:
+            rng = random.Random(SAMPLE_SEED)
+            samples = sorted(rng.sample(samples, max_static_samples))
+            logger.info(
+                f"Letter '{letter}': capped to {max_static_samples} random samples "
+                f"(seed={SAMPLE_SEED})"
+            )
 
         extracted = 0
         failed = 0
@@ -97,7 +115,9 @@ def extract_full_dataset_keypoints(
             if is_dynamic:
                 entry = _extract_dynamic_entry(sample_path, letter)
             else:
-                entry = _extract_static_entry(sample_path, letter)
+                entry = _extract_static_entry(
+                    sample_path, letter, landmarker=shared_image_landmarker,
+                )
 
             if entry is not None:
                 dataset.append(entry)
@@ -111,6 +131,8 @@ def extract_full_dataset_keypoints(
             f"Letter '{letter}' ({'video' if is_dynamic else 'image'}): "
             f"{extracted} extracted, {failed} failed"
         )
+
+    shared_image_landmarker.close()
 
     output_path = processed_path / "full_keypoints.json"
     with open(output_path, "w") as f:

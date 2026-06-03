@@ -1,9 +1,9 @@
 from pathlib import Path
 
+from loguru import logger
 import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
-from loguru import logger
 
 # Landmark names for reference
 LANDMARK_NAMES = [
@@ -31,12 +31,20 @@ def _build_landmarker() -> vision.HandLandmarker:
     return vision.HandLandmarker.create_from_options(options)
 
 
-def extract_keypoints(image_path: str | Path) -> dict | None:
+def extract_keypoints(
+    image_path: str | Path,
+    landmarker: vision.HandLandmarker | None = None,
+) -> dict | None:
     """
     Extract all available data from MediaPipe Hand Landmarker.
 
     Args:
         image_path: Path to the image file.
+        landmarker: Optional pre-built HandLandmarker (IMAGE mode) to reuse
+            across many calls. Building a landmarker spins up a Metal/GL
+            context (~300 ms); for bulk extraction, pass a shared instance
+            to amortize that cost. When None, a fresh one is built and
+            torn down for this call.
 
     Returns:
         Dictionary with all MediaPipe outputs, or None if no hand detected.
@@ -54,8 +62,11 @@ def extract_keypoints(image_path: str | Path) -> dict | None:
 
     mp_image = mp.Image.create_from_file(str(image_path))
 
-    with _build_landmarker() as landmarker:
+    if landmarker is not None:
         result = landmarker.detect(mp_image)
+    else:
+        with _build_landmarker() as fresh:
+            result = fresh.detect(mp_image)
 
     if not result.hand_landmarks:
         return None

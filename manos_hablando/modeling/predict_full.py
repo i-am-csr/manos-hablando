@@ -18,9 +18,48 @@ console = Console()
 
 MODEL_PATH = MODELS_DIR / "lsm_full_transformer.pt"
 
+# Per-user systematic confusion fixes for the current trained model. Toggle
+# with --correct-biases. These are *not* universal — they encode one signer's
+# observed substitutions against the MSL-ABC-trained checkpoint and will be
+# wrong for any user whose hand shapes don't share these biases. Re-derive
+# the table after fine-tuning or retraining.
+KNOWN_BIAS_SUBSTITUTIONS: dict[str, str] = {
+    "P": "K",
+    "RR": "R",
+    "LL": "L",
+    "T": "S",
+}
+
+# Multi-character classes in the trained label set. Used to re-tokenize a
+# concatenated word string back into letter tokens before bias correction,
+# since the buffer joins everything with "".
+MULTI_CHAR_LETTERS: set[str] = {"LL", "RR"}
+
+
+def tokenize_word(word: str) -> list[str]:
+    """Greedy 2-then-1-char split honoring MULTI_CHAR_LETTERS."""
+    tokens: list[str] = []
+    i = 0
+    while i < len(word):
+        if i + 1 < len(word) and word[i : i + 2] in MULTI_CHAR_LETTERS:
+            tokens.append(word[i : i + 2])
+            i += 2
+        else:
+            tokens.append(word[i])
+            i += 1
+    return tokens
+
+
+def apply_bias_corrections(words: list[str]) -> list[str]:
+    """Tokenize each word, map letters through the substitution table, rejoin."""
+    return [
+        "".join(KNOWN_BIAS_SUBSTITUTIONS.get(tok, tok) for tok in tokenize_word(w)) for w in words
+    ]
+
 
 class Mode(str, Enum):
     """Segmentation strategy."""
+
     # Slide a classifier window across the video and debounce per-frame
     # predictions through LetterBuffer. Robust to natural signing without
     # explicit hand-down pauses.
@@ -33,6 +72,7 @@ class Mode(str, Enum):
 # ─────────────────────────────────────────
 # Shared helpers
 # ─────────────────────────────────────────
+
 
 def load_model(
     model_path: Path,
@@ -56,7 +96,8 @@ def classify_segment(
 ) -> list[tuple[str, float]]:
     """Top-k classification of a single sign segment."""
     X_tensor = prepare_inference_sequence(
-        frames, is_static_image=False,
+        frames,
+        is_static_image=False,
     ).to(device)
 
     with torch.no_grad():
@@ -73,6 +114,7 @@ def classify_segment(
 # ─────────────────────────────────────────
 # Mode: gaps — cut on no-hand boundaries
 # ─────────────────────────────────────────
+
 
 def segment_timeline(
     timeline: list[list | None],
@@ -111,6 +153,7 @@ def segment_timeline(
 # ─────────────────────────────────────────
 # Mode: sliding — debounce per-frame
 # ─────────────────────────────────────────
+
 
 def analyze_sliding(
     timeline: list[list | None],
@@ -162,7 +205,7 @@ def analyze_sliding(
             events.append((t, "", 0.0, "no_hand"))
         else:
             window_start = max(0, t - window_frames + 1)
-            window = [f for f in timeline[window_start:t + 1] if f is not None]
+            window = [f for f in timeline[window_start : t + 1] if f is not None]
             if len(window) < 3:
                 buffer.add_no_hand()
                 events.append((t, "", 0.0, "too_short"))
@@ -193,17 +236,19 @@ def analyze_sliding(
 # CLI
 # ─────────────────────────────────────────
 
+
 @app.command()
 def main(
     video_path: Path = typer.Argument(
-        ..., help="Path to a video containing one or more fingerspelled signs.",
+        ...,
+        help="Path to a video containing one or more fingerspelled signs.",
     ),
     model_path: Path = MODEL_PATH,
     mode: Mode = typer.Option(
         Mode.sliding,
         "--mode",
         help="sliding (debounce per-frame predictions, good for natural "
-             "signing) or gaps (split on hand-down pauses).",
+        "signing) or gaps (split on hand-down pauses).",
     ),
     # gaps-mode knobs
     gap_frames: int = typer.Option(
@@ -220,16 +265,18 @@ def main(
     ),
     # sliding-mode knobs
     window_frames: int = typer.Option(
-        30, help="[sliding] frames per classifier window (default 1s @ 30fps).",
+        30,
+        help="[sliding] frames per classifier window (default 1s @ 30fps).",
     ),
     stride: int = typer.Option(
-        3, help="[sliding] step between classifier evaluations, in frames.",
+        3,
+        help="[sliding] step between classifier evaluations, in frames.",
     ),
     stability: int = typer.Option(
         4,
         help="[sliding] consecutive matching predictions required to commit "
-             "a letter. At stride=3 default, 4 → ~12 frames (~0.4s) of "
-             "agreement.",
+        "a letter. At stride=3 default, 4 → ~12 frames (~0.4s) of "
+        "agreement.",
     ),
     confidence: float = typer.Option(
         0.5,
@@ -243,21 +290,32 @@ def main(
     slowdown: int = typer.Option(
         1,
         help="Replicate each timeline frame N times before analysis. "
-             "Use 2-3 for fast natural fingerspelling where letters are "
-             "held briefly (<20 frames each). Identity at N=1.",
+        "Use 2-3 for fast natural fingerspelling where letters are "
+        "held briefly (<20 frames each). Identity at N=1.",
     ),
     no_llm: bool = typer.Option(
-        False, "--no-llm", help="Skip the LLM reconstruction step.",
+        False,
+        "--no-llm",
+        help="Skip the LLM reconstruction step.",
+    ),
+    correct_biases: bool = typer.Option(
+        False,
+        "--correct-biases",
+        help="Apply per-user substitutions (P→K, RR→R, LL→L, T→S) before "
+        "output and before the LLM call. These compensate for one "
+        "signer's systematic confusions on the current model and will "
+        "produce wrong reads for any other user.",
     ),
     context: str = typer.Option(
         "",
         "--context",
         help="Hint for the LLM about what was signed "
-             "(e.g. \"a Spanish person's first name and surnames\"). "
-             "Without this, the LLM defaults to common Spanish vocabulary.",
+        '(e.g. "a Spanish person\'s first name and surnames"). '
+        "Without this, the LLM defaults to common Spanish vocabulary.",
     ),
     verbose: bool = typer.Option(
-        False, "--verbose",
+        False,
+        "--verbose",
         help="[sliding] print the per-step event log for diagnostics.",
     ),
 ):
@@ -305,19 +363,33 @@ def main(
         timeline = [f for f in timeline for _ in range(slowdown)]
         fps = fps * slowdown
         logger.info(
-            f"Slowdown x{slowdown} → {len(timeline)} effective frames "
-            f"@ {fps:.1f} effective fps."
+            f"Slowdown x{slowdown} → {len(timeline)} effective frames @ {fps:.1f} effective fps."
         )
 
     if mode is Mode.gaps:
         letters = _run_gaps(
-            timeline, fps, model, encoder, device,
-            gap_frames, min_segment, min_confidence, top_k,
+            timeline,
+            fps,
+            model,
+            encoder,
+            device,
+            gap_frames,
+            min_segment,
+            min_confidence,
+            top_k,
         )
     else:
         letters = _run_sliding(
-            timeline, fps, model, encoder, device,
-            window_frames, stride, stability, confidence, word_boundary,
+            timeline,
+            fps,
+            model,
+            encoder,
+            device,
+            window_frames,
+            stride,
+            stability,
+            confidence,
+            word_boundary,
             verbose,
         )
 
@@ -327,6 +399,11 @@ def main(
 
     raw = " ".join(letters)
     logger.success(f"Raw letter sequence: {raw}")
+
+    if correct_biases:
+        letters = apply_bias_corrections(letters)
+        corrected = " ".join(letters)
+        logger.success(f"Bias-corrected sequence: {corrected}")
 
     if no_llm:
         return
@@ -343,19 +420,26 @@ def main(
         "fallback": "🔴 FALLBACK",
         "no_key": "⚪ NO KEY",
     }.get(llm.last_status, llm.last_status)
-    logger.success(
-        f"{badge} ({llm.last_latency_ms:.0f}ms) → '{reconstructed}'"
-    )
+    logger.success(f"{badge} ({llm.last_latency_ms:.0f}ms) → '{reconstructed}'")
     if llm.last_error:
         logger.warning(f"LLM error: {llm.last_error}")
 
 
 def _run_gaps(
-    timeline, fps, model, encoder, device,
-    gap_frames, min_segment, min_confidence, top_k,
+    timeline,
+    fps,
+    model,
+    encoder,
+    device,
+    gap_frames,
+    min_segment,
+    min_confidence,
+    top_k,
 ) -> list[str]:
     segments = segment_timeline(
-        timeline, gap_frames=gap_frames, min_segment=min_segment,
+        timeline,
+        gap_frames=gap_frames,
+        min_segment=min_segment,
     )
     logger.info(f"Found {len(segments)} sign segment(s).")
     if not segments:
@@ -368,8 +452,11 @@ def _run_gaps(
     letters: list[str] = []
     table = Table(title="Sign segments")
     for col, style in (
-        ("#", "cyan"), ("Time", "magenta"), ("Frames", "white"),
-        ("Prediction", "green"), (f"Top-{top_k}", "dim"),
+        ("#", "cyan"),
+        ("Time", "magenta"),
+        ("Frames", "white"),
+        ("Prediction", "green"),
+        (f"Top-{top_k}", "dim"),
     ):
         table.add_column(col, style=style)
 
@@ -380,11 +467,14 @@ def _run_gaps(
         if not dropped:
             letters.append(top_letter)
 
-        candidates = ", ".join(f"{l} {c*100:.0f}%" for l, c in predictions)
+        candidates = ", ".join(f"{l} {c * 100:.0f}%" for l, c in predictions)
         flag = "  ⚠ dropped" if dropped else ""
         table.add_row(
-            str(i), f"{start/fps:5.2f}s–{end/fps:5.2f}s", str(len(frames)),
-            f"{top_letter} ({top_conf*100:.1f}%){flag}", candidates,
+            str(i),
+            f"{start / fps:5.2f}s–{end / fps:5.2f}s",
+            str(len(frames)),
+            f"{top_letter} ({top_conf * 100:.1f}%){flag}",
+            candidates,
         )
 
     console.print(table)
@@ -392,8 +482,16 @@ def _run_gaps(
 
 
 def _run_sliding(
-    timeline, fps, model, encoder, device,
-    window_frames, stride, stability, confidence, word_boundary,
+    timeline,
+    fps,
+    model,
+    encoder,
+    device,
+    window_frames,
+    stride,
+    stability,
+    confidence,
+    word_boundary,
     verbose,
 ) -> list[str]:
     logger.info(
@@ -402,9 +500,15 @@ def _run_sliding(
     )
 
     words, events = analyze_sliding(
-        timeline, fps, model, encoder, device,
-        window_frames=window_frames, stride=stride,
-        stability_window=stability, confidence_threshold=confidence,
+        timeline,
+        fps,
+        model,
+        encoder,
+        device,
+        window_frames=window_frames,
+        stride=stride,
+        stability_window=stability,
+        confidence_threshold=confidence,
         word_boundary_frames=word_boundary,
     )
 
@@ -419,15 +523,19 @@ def _run_sliding(
     if verbose:
         ev_table = Table(title="Per-step events")
         for col, style in (
-            ("Frame", "cyan"), ("Time", "magenta"),
-            ("Letter", "green"), ("Conf", "yellow"), ("Status", "dim"),
+            ("Frame", "cyan"),
+            ("Time", "magenta"),
+            ("Letter", "green"),
+            ("Conf", "yellow"),
+            ("Status", "dim"),
         ):
             ev_table.add_column(col, style=style)
         for frame_idx, letter, conf, status in events:
             ev_table.add_row(
-                str(frame_idx), f"{frame_idx/fps:5.2f}s",
+                str(frame_idx),
+                f"{frame_idx / fps:5.2f}s",
                 letter or "—",
-                f"{conf*100:.0f}%" if status == "pred" else "—",
+                f"{conf * 100:.0f}%" if status == "pred" else "—",
                 status,
             )
         console.print(ev_table)

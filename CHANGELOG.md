@@ -1,3 +1,24 @@
+## 2026-06-02
+
+### Alternative-models notebook (`notebooks/alternative_models.ipynb`)
+- Built the Week 5 / Activity 4 deliverable: 7 non-ensemble individual classifiers on the unified 29-letter dataset, with mean-pooled per-sample features `(63,)` so classical sklearn models can train on the same data the transformer sees.
+- Pipeline: balanced subsample → 60/20/20 train/val/test split → `StandardScaler` + classifier, evaluated with F1-Macro as the primary metric.
+- Baseline leaderboard (val): MLP **0.9425**, RandomForest **0.8971**, LogReg 0.8781, SVM-RBF 0.8768, KNN 0.8407, DecisionTree 0.7802, GaussianNB 0.6447.
+- Hyperparameter tuning (RandomizedSearchCV, 20 combos) on the top two: MLP flat on val (−0.001) but **+0.0044 F1 on test**; RandomForest +0.006 on val, flat on test.
+- **Final selection: tuned MLP** — `hidden_layer_sizes=(128, 64)`, `activation='tanh'`, `alpha=0.001`, `lr_init=0.001`. Test: **F1-Macro=0.9617, acc=95.93%** — within ~1.5 pts of `LSMVideoTransformer` (test_acc=97.5%) on mean-pooled features that throw away the temporal axis.
+
+### Bulk-extraction speedup (`data/extract_keypoints_full.py`, `data/mediapipe_handler.py`)
+- `extract_keypoints()` now accepts an optional pre-built `landmarker`; `extract_keypoints_full.py` builds **one** IMAGE-mode `HandLandmarker` and reuses it across all static images, amortizing the ~300 ms Metal/GL context warm-up that previously ran per image. Dynamic letters still build their own VIDEO-mode landmarker per clip.
+- Added `DEFAULT_MAX_STATIC_SAMPLES = 1500` cap with deterministic `random.Random(SAMPLE_SEED=42)` subsampling — larger per-letter sets showed diminishing returns and inflated extraction time linearly. Cap is opt-out via `max_static_samples=None`.
+
+### `predict_full.py` — per-user bias correction
+- Added `--correct-biases` flag with a hardcoded substitution table `KNOWN_BIAS_SUBSTITUTIONS = {P→K, RR→R, LL→L, T→S}` for one signer's systematic confusions against the current MSL-ABC-trained checkpoint. Documented as **per-user, not universal** — re-derive after any retrain/fine-tune.
+- Added `tokenize_word()` (greedy 2-then-1-char split honoring `MULTI_CHAR_LETTERS = {"LL", "RR"}`) and `apply_bias_corrections()` so multi-char classes survive the `LetterBuffer`'s "".join() concatenation before substitution.
+- Applies corrections **before** the LLM call so the prompt sees the cleaned sequence; raw sequence is still logged for diagnostics.
+- Rest of the file is `ruff format` cleanup (line wrapping, trailing newline) — no behavior change.
+
+---
+
 ## 2026-05-29
 
 ### Unified Full Pipeline (29 letters)

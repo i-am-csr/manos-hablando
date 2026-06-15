@@ -19,10 +19,10 @@ These letters cannot be classified from a single static image — they require a
 
 ### Source
 
-Videos are stored in `data/raw/{LETTER}/`, one folder per letter:
+Videos are stored in `data/raw/letters/{LETTER}/`, one folder per letter:
 
 ```
-data/raw/
+data/raw/letters/
 ├── J/   → 102 videos (S1-J-frontal-1.mp4, ...)
 ├── K/   → 105 videos
 ├── Ñ/   → 107 videos

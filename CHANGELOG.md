@@ -1,3 +1,31 @@
+## 2026-06-03
+
+### Raw-data restructure (`data/raw/letters/`, `data/raw/words/`)
+- Moved the per-letter folders from `data/raw/{LETTER}/` to `data/raw/letters/{LETTER}/` to make room for a parallel `data/raw/words/` dataset of whole-word sign clips (42 word classes, ~50 videos each, ~2,100 videos total).
+- `config.py`: added `RAW_LETTERS_DIR = RAW_DATA_DIR / "letters"` and `RAW_WORDS_DIR = RAW_DATA_DIR / "words"`; kept `RAW_DATA_DIR` pointing at `data/raw/` so future datasets can branch off the same root.
+- Updated all three letter extractors (`extract_keypoints.py`, `extract_keypoints_video.py`, `extract_keypoints_full.py`) to default to `RAW_LETTERS_DIR`. CLAUDE.md and `docs/docs/video_pipeline.md` paths updated to match.
+
+### MediaPipe holistic reference notebook + docs
+- New `references/mediapipe_holistic_reference.ipynb` — replaces the deprecated `mediapipe.solutions.holistic` solution by running the three Tasks-API landmarkers (`FaceLandmarker`, `PoseLandmarker`, `HandLandmarker`) side by side. Walks through IMAGE and VIDEO modes, the combined per-frame feature layout (`pose 132 + face 1434 + hands 126 = 1692`), zero-padding for missing modalities, and integration notes (shoulder-centered normalization, handedness flip, mesh trimming).
+- New `docs/docs/mediapipe_face_pose_mapped.md` — companion to the existing hand-landmarks doc. Documents the 478 face points (468 mesh + 10 iris) with canonical index lists for face oval, lips (outer/inner), eyes, eyebrows, and irises; the 52 blendshape coefficients grouped by region; and all 33 pose landmarks split into face (0-10), upper body (11-22, the ones LSM cares about), and lower body (23-32). Includes the combined-feature-vector table and pointers to download `face_landmarker.task` and `pose_landmarker.task`.
+
+### Holistic words pipeline — 5 new files
+- `manos_hablando/data/holistic_handler.py` — Tasks-API holistic extractor. Builds the three landmarkers in IMAGE or VIDEO mode, exposes `build_feature_vector(face, pose, hand)` → `(FEATURE_DIM=1692,) float32`, and `extract_holistic_video(path)` → per-frame tensor plus modality detection counts. `_check_models()` raises a clear download instruction when `face_landmarker.task` / `pose_landmarker.task` are missing from `models/`. Section offset constants (`POSE_OFFSET=0`, `FACE_OFFSET=132`, `LEFT_HAND_OFFSET=1566`, `RIGHT_HAND_OFFSET=1629`) plus shoulder indices (`LEFT_SHOULDER_IDX=11`, `RIGHT_SHOULDER_IDX=12`) live here so downstream normalization can address the right slots.
+- `manos_hablando/data/extract_keypoints_holistic.py` — walks `data/raw/words/{Word}/*.mp4`, writes one `.npz` per video at `data/processed/holistic/{Word}/{stem}.npz` (single key `features`, shape `(N_frames, 1692)`) plus a `data/processed/holistic_keypoints.json` manifest indexing them. **Storage choice:** inline JSON like the letter pipelines would balloon to multi-GB and parse painfully slowly; npz + a small manifest keeps the bulk binary and the index readable.
+- `manos_hablando/dataset_holistic.py` — manifest-driven loader. Lazily reads each `.npz`, reuses `LSMVideoDataset` + `collate_video_batch` from `dataset_video.py`. Exposes `get_holistic_dataloaders()` and `prepare_inference_sequence()`. First cut shipped **without normalization** — flagged as TODO; addressed the next day.
+- `manos_hablando/modeling/train_holistic.py` — thin wrapper around `LSMVideoTransformer` with `input_dim=FEATURE_DIM` (1692) and a wider `d_model=256` default to absorb the bigger input. Default `batch_size=8` (vs 16 in `train_full`) because each sample is ~27× larger. MLflow experiment `lsm-holistic-transformer`; checkpoint `models/lsm_holistic_transformer.pt`.
+- `manos_hablando/modeling/predict_holistic.py` — single video → top-K predicted word. **No segmentation, no LLM**: words are direct labels, the whole clip is classified once.
+- CLAUDE.md: new "Holistic words pipeline" architecture section + four CLI lines (extract / dataset sanity / train / predict).
+
+### Holistic v1 training → chance; shoulder-centered normalization added
+- Extraction across `data/raw/words/`: 2,159 videos succeeded (sequence lengths min=133, max=179, mean=150.4 frames). The +52 over the 2,107 raw `.mp4` count comes from a handful of clips that produced a second extraction after a hand re-detection — investigate later.
+- First training pass (50 epochs, ~6 min CPU): **collapsed to uniform predictions** — `train_loss` plateaued at 3.7356 (log(42) ≈ 3.7377), `val_acc` oscillated between 8/324 and 9/324, `test_acc=0.0247` (chance = 1/42 ≈ 0.0238).
+- Root cause: features went straight from MediaPipe's 0-1 image-space into the model. The 1434-dim face block dominates the 126-dim hand block by sheer volume, and absolute screen positions depend on where the signer stood — there's no consistent signal across samples.
+- Fix: `normalize_holistic_sequence(seq)` in `dataset_holistic.py`. Per-frame: anchor = midpoint of pose 11/12, scale = euclidean distance between them. Recenter all `x,y` (pose, face, both hands) on the anchor; divide all `x,y,z` by the scale. Leave pose `visibility` alone (it's already 0-1 semantic). Hands that weren't detected stay all-zero; frames where shoulders are missing get zeroed entirely. Verified on a real sample: post-norm shoulders sit exactly at `(±0.5, ≈0)`, shoulder distance `1.0`.
+- Wired into both `get_holistic_dataloaders()` (training path) and `prepare_inference_sequence()` (predict path) so train and inference stay in sync. No re-extraction needed — normalization happens at load time.
+
+---
+
 ## 2026-06-02
 
 ### Alternative-models notebook (`notebooks/alternative_models.ipynb`)

@@ -46,6 +46,12 @@ uv run python -m manos_hablando.data.extract_keypoints_full 2>/dev/null    # raw
 uv run python -m manos_hablando.dataset_full                               # sanity-check load + split
 uv run python -m manos_hablando.modeling.train_full 2>/dev/null            # → models/lsm_full_transformer.pt
 uv run python -m manos_hablando.modeling.predict_full <video.mp4> 2>/dev/null
+
+# Holistic words pipeline (whole signed words from data/raw/words/, face + pose + hands features)
+uv run python -m manos_hablando.data.extract_keypoints_holistic 2>/dev/null  # raw → data/processed/holistic/*.npz + holistic_keypoints.json
+uv run python -m manos_hablando.dataset_holistic                             # sanity-check load + split
+uv run python -m manos_hablando.modeling.train_holistic 2>/dev/null          # → models/lsm_holistic_transformer.pt
+uv run python -m manos_hablando.modeling.predict_holistic <video.mp4> 2>/dev/null
 ```
 
 The `2>/dev/null` for video commands suppresses noisy MediaPipe/TFLite C++ logging — keep it when documenting examples.
@@ -109,21 +115,21 @@ The codebase contains **three pipelines** that share normalization but have sepa
 
 ### Static pipeline (24 letters, A–Y except J and Z)
 
-- Dataset: `data/raw/{LETTER}/*.jpg|png` → `data/processed/keypoints.json` (one entry per image, `keypoints` shape `(21, 3)`).
+- Dataset: `data/raw/letters/{LETTER}/*.jpg|png` → `data/processed/keypoints.json` (one entry per image, `keypoints` shape `(21, 3)`).
 - Model: `LSMTransformer` in `modeling/train.py` — Transformer encoder over a **dummy** sequence of length 1 (input is unsqueezed to `(batch, 1, 63)`). The transformer architecture is mostly a stand-in for an MLP here; the temporal dimension is meaningless.
 - Checkpoint: `models/lsm_transformer.pt`. MLflow experiment: `lsm-transformer`.
 
 ### Video / dynamic pipeline (6 letters: J, K, Ñ, Q, X, Z)
 
-- Dataset: `data/raw/{LETTER}/*.mp4` (naming `S{subject}-{letter}-{view}-{take}.mp4`) → `data/processed/video_keypoints.json`. Each entry has `keypoints` of shape `(N_frames, 21, 3)`, variable N per video.
+- Dataset: `data/raw/letters/{LETTER}/*.mp4` (naming `S{subject}-{letter}-{view}-{take}.mp4`) → `data/processed/video_keypoints.json`. Each entry has `keypoints` of shape `(N_frames, 21, 3)`, variable N per video.
 - `dataset_video.py`: variable-length sequences are kept as a `list[np.ndarray]` until the DataLoader. The custom `collate_video_batch` zero-pads to the longest sequence in the batch and returns `(X_padded, y, lengths)`.
 - Model: `LSMVideoTransformer` in `modeling/train_video.py` — same building blocks but takes a **real** temporal sequence `(batch, seq_len, 63)` and accepts an `src_key_padding_mask`. Pooling is **masked mean** over non-padded frames; do NOT replace with plain `.mean(dim=1)` or padding will contaminate the embedding.
-- The set of dynamic letters is hardcoded as `DYNAMIC_LETTERS = {"J", "K", "Ñ", "Q", "X", "Z"}` in `data/extract_keypoints_video.py`. Keep this in sync with `data/raw/`.
+- The set of dynamic letters is hardcoded as `DYNAMIC_LETTERS = {"J", "K", "Ñ", "Q", "X", "Z"}` in `data/extract_keypoints_video.py`. Keep this in sync with `data/raw/letters/`.
 - Checkpoint: `models/lsm_video_transformer.pt`. MLflow experiment: `lsm-video-transformer`.
 
 ### Full / unified pipeline (29 letters: A–Z + Ñ + LL + RR)
 
-- Dataset: every letter folder under `data/raw/` — static letter folders contribute images, the 6 dynamic letters contribute videos. `extract_keypoints_full.py` routes each folder to the right MediaPipe mode and emits a single `data/processed/full_keypoints.json` where every entry has shape `(N_frames, 21, 3)`. Static letters have `N=1`; dynamic letters have `N=20-100+`. Each entry carries a `source` field (`"image"` or `"video"`) so downstream code can branch on it.
+- Dataset: every letter folder under `data/raw/letters/` — static letter folders contribute images, the 6 dynamic letters contribute videos. `extract_keypoints_full.py` routes each folder to the right MediaPipe mode and emits a single `data/processed/full_keypoints.json` where every entry has shape `(N_frames, 21, 3)`. Static letters have `N=1`; dynamic letters have `N=20-100+`. Each entry carries a `source` field (`"image"` or `"video"`) so downstream code can branch on it.
 - `dataset_full.py`: at load time, single-frame entries (static letters) are replicated to `STATIC_REPLICATE_LENGTH = 30` via `np.repeat`. This is **load-bearing** — it closes the train/inference distribution gap so that a real video of someone holding "A" for ~30 frames matches what the model saw in training. Reuses `LSMVideoDataset` + `collate_video_batch` + `normalize_video_sequences` from `dataset_video.py`. Also exposes `prepare_inference_sequence()` used by `predict_full.py`.
 - Model: reuses `LSMVideoTransformer` from `train_video.py` unchanged — the architecture and training loop are identical, only the data and class count differ. `train_full.py` is a thin wrapper.
 - Checkpoint: `models/lsm_full_transformer.pt`. MLflow experiment: `lsm-full-transformer`. Current run: `val_acc=90.2%`, `test_acc=87.2%` (on the isolated training distribution — natural connected fingerspelling is substantially harder).
@@ -134,6 +140,16 @@ The codebase contains **three pipelines** that share normalization but have sepa
     - **gaps**: walks the timeline once, cuts segments at runs of `gap_frames` no-hand frames, classifies each segment.
   - `--slowdown N` replicates each timeline entry N times before analysis. At N=3-4 a 10-frame natural held pose becomes 30-40 effective frames, matching what `STATIC_REPLICATE_LENGTH=30` trained the model to see. **Diminishing returns at 4×, harmful at 5×+** because letter transitions also get stretched and start getting debounced as spurious letters (the U/V family is most prone to this).
   - Known systematic confusions in the trained model — useful for prompt design: closed-fist family (A↔M↔N↔S↔T) and pointing-finger family (R↔V↔U↔K). These are documented in `SYSTEM_PROMPT` so the LLM can compensate.
+
+### Holistic words pipeline (whole signed words, face + pose + hands)
+
+- **Purpose:** classify whole Spanish words signed in LSM (not letter-by-letter spelling), like `Abrir`, `Bailar`, `Comer`. Lives entirely separately from the letter pipelines — different data, different MediaPipe stack, different model checkpoint.
+- **Replaces deprecated `mediapipe.solutions.holistic`** by running the three Tasks-API landmarkers side-by-side: `FaceLandmarker`, `PoseLandmarker`, `HandLandmarker`. Per-frame feature is the concatenation `pose(33×4) + face(478×3) + left_hand(21×3) + right_hand(21×3) = 1692` dims; missing detections become zero-padded slots. Constants live in `data/holistic_handler.py` (`FEATURE_DIM`, `POSE_DIMS`, etc.).
+- **Requires two extra MediaPipe model files** not currently in `models/`: `face_landmarker.task` and `pose_landmarker.task`. `holistic_handler._check_models()` raises a clear download instruction if either is missing. URLs are in the docstring and in `references/mediapipe_holistic_reference.ipynb`.
+- Dataset: every word folder under `data/raw/words/` (e.g. `Abrir/`, `Bailar/`) → one `.npz` per video at `data/processed/holistic/{Word}/{file_stem}.npz` (key `features`, shape `(N_frames, 1692)`), plus a single `data/processed/holistic_keypoints.json` manifest indexing them. **JSON-only storage like the letter pipelines would balloon to ~GB-scale** because of the 1692-dim per-frame features — npz keeps the manifest readable and the bulk binary.
+- `dataset_holistic.py`: walks the manifest, lazily loads each `.npz`, reuses `LSMVideoDataset` + `collate_video_batch` from `dataset_video.py`. **No normalization is currently applied** — features go straight from MediaPipe's image-normalized 0-1 space into the model. Adding shoulder-centered normalization (anchor on pose 11/12 midpoint) is the natural next step.
+- Model: reuses `LSMVideoTransformer` from `train_video.py` unchanged, just with `input_dim=FEATURE_DIM` (1692) instead of 63 and a larger `d_model=256` default to absorb the wider input. Checkpoint: `models/lsm_holistic_transformer.pt`. MLflow experiment: `lsm-holistic-transformer`.
+- Inference (`predict_holistic.py`): assumes **one signed word per video** — no segmentation, no LLM call. The whole clip's features are classified once and top-K candidates are printed.
 
 ### Streamlit app (`manos_hablando/app.py`)
 

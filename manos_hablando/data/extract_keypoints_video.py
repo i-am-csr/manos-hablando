@@ -2,11 +2,11 @@ import json
 from pathlib import Path
 
 from loguru import logger
-from rich.progress import track
 from rich.console import Console
+from rich.progress import track
 from rich.table import Table
 
-from manos_hablando.config import RAW_DATA_DIR, PROCESSED_DATA_DIR
+from manos_hablando.config import PROCESSED_DATA_DIR, RAW_LETTERS_DIR
 from manos_hablando.data.mediapipe_handler import extract_keypoints_video
 
 SUPPORTED_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv"}
@@ -15,7 +15,7 @@ console = Console()
 
 
 def extract_video_dataset_keypoints(
-    raw_path: Path = RAW_DATA_DIR,
+    raw_path: Path = RAW_LETTERS_DIR,
     processed_path: Path = PROCESSED_DATA_DIR,
 ) -> None:
     """
